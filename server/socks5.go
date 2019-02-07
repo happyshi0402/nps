@@ -1,10 +1,10 @@
 package server
 
 import (
+	"../bridge"
+	"../lib"
 	"encoding/binary"
 	"errors"
-	"github.com/cnlh/nps/bridge"
-	"github.com/cnlh/nps/lib"
 	"io"
 	"net"
 	"strconv"

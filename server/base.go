@@ -1,9 +1,9 @@
 package server
 
 import (
+	"../bridge"
+	"../lib"
 	"errors"
-	"github.com/cnlh/nps/bridge"
-	"github.com/cnlh/nps/lib"
 	"net"
 	"net/http"
 	"sync"

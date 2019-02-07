@@ -1,8 +1,8 @@
 package bridge
 
 import (
+	"../lib"
 	"errors"
-	"github.com/cnlh/nps/lib"
 	"net"
 	"sync"
 	"time"
@@ -135,7 +135,7 @@ func (s *Bridge) typeDeal(typeVal string, c *lib.Conn, id int) {
 }
 
 //等待
-func (s *Bridge) waitStatus(clientId, id int) (bool) {
+func (s *Bridge) waitStatus(clientId, id int) bool {
 	ticker := time.NewTicker(time.Millisecond * 100)
 	stop := time.After(time.Second * 10)
 	for {

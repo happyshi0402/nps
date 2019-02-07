@@ -1,10 +1,10 @@
 package main
 
 import (
+	"../../client"
+	"../../lib"
+	_ "../../lib"
 	"flag"
-	"github.com/cnlh/nps/client"
-	"github.com/cnlh/nps/lib"
-	_ "github.com/cnlh/nps/lib"
 	"strings"
 )
 

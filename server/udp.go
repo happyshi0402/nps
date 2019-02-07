@@ -1,8 +1,8 @@
 package server
 
 import (
-	"github.com/cnlh/nps/bridge"
-	"github.com/cnlh/nps/lib"
+	"../bridge"
+	"../lib"
 	"net"
 	"strings"
 )

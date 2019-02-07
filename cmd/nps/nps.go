@@ -1,11 +1,11 @@
 package main
 
 import (
+	"../../lib"
+	"../../server"
+	_ "../../web/routers"
 	"flag"
 	"github.com/astaxie/beego"
-	"github.com/cnlh/nps/lib"
-	"github.com/cnlh/nps/server"
-	_ "github.com/cnlh/nps/web/routers"
 	"log"
 	"os"
 	"path/filepath"

@@ -1,8 +1,8 @@
 package controllers
 
 import (
-	"github.com/cnlh/nps/lib"
-	"github.com/cnlh/nps/server"
+	"../../lib"
+	"../../server"
 )
 
 type ClientController struct {

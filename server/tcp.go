@@ -1,10 +1,10 @@
 package server
 
 import (
+	"../bridge"
+	"../lib"
 	"errors"
 	"github.com/astaxie/beego"
-	"github.com/cnlh/nps/bridge"
-	"github.com/cnlh/nps/lib"
 	"net"
 	"path/filepath"
 	"strings"

@@ -1,8 +1,8 @@
 package server
 
 import (
+	"../lib"
 	"github.com/astaxie/beego"
-	"github.com/cnlh/nps/lib"
 	"log"
 	"strconv"
 )

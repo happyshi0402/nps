@@ -1,11 +1,11 @@
 package server
 
 import (
+	"../bridge"
+	"../lib"
 	"bufio"
 	"crypto/tls"
 	"github.com/astaxie/beego"
-	"github.com/cnlh/nps/bridge"
-	"github.com/cnlh/nps/lib"
 	"net/http"
 	"net/http/httputil"
 	"path/filepath"

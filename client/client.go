@@ -1,7 +1,7 @@
 package client
 
 import (
-	"github.com/cnlh/nps/lib"
+	"../lib"
 	"net"
 	"sync"
 	"time"
