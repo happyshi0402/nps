@@ -1,179 +1,220 @@
 package client
 
 import (
-	"github.com/cnlh/nps/lib"
+	"bufio"
+	"github.com/cnlh/nps/lib/common"
+	"github.com/cnlh/nps/lib/config"
+	"github.com/cnlh/nps/lib/conn"
+	"github.com/cnlh/nps/lib/crypt"
+	"github.com/cnlh/nps/lib/mux"
+	"github.com/cnlh/nps/vender/github.com/astaxie/beego/logs"
+	"github.com/cnlh/nps/vender/github.com/xtaci/kcp"
 	"net"
-	"sync"
+	"net/http"
+	"strconv"
 	"time"
 )
 
 type TRPClient struct {
-	svrAddr string
-	linkMap map[int]*lib.Link
-	stop    chan bool
-	tunnel  *lib.Conn
-	sync.Mutex
-	vKey string
+	svrAddr        string
+	bridgeConnType string
+	proxyUrl       string
+	vKey           string
+	p2pAddr        map[string]string
+	tunnel         *mux.Mux
+	signal         *conn.Conn
+	ticker         *time.Ticker
+	cnf            *config.Config
 }
 
 //new client
-func NewRPClient(svraddr string, vKey string) *TRPClient {
+func NewRPClient(svraddr string, vKey string, bridgeConnType string, proxyUrl string, cnf *config.Config) *TRPClient {
 	return &TRPClient{
-		svrAddr: svraddr,
-		linkMap: make(map[int]*lib.Link),
-		stop:    make(chan bool),
-		tunnel:  nil,
-		Mutex:   sync.Mutex{},
-		vKey:    vKey,
+		svrAddr:        svraddr,
+		p2pAddr:        make(map[string]string, 0),
+		vKey:           vKey,
+		bridgeConnType: bridgeConnType,
+		proxyUrl:       proxyUrl,
+		cnf:            cnf,
 	}
 }
 
 //start
-func (s *TRPClient) Start() error {
-	s.NewConn()
-	return nil
-}
-
-//新建
-func (s *TRPClient) NewConn() {
+func (s *TRPClient) Start() {
 retry:
-	conn, err := net.Dial("tcp", s.svrAddr)
+	c, err := NewConn(s.bridgeConnType, s.vKey, s.svrAddr, common.WORK_MAIN, s.proxyUrl)
 	if err != nil {
-		lib.Println("连接服务端失败,五秒后将重连")
+		logs.Error("The connection server failed and will be reconnected in five seconds")
 		time.Sleep(time.Second * 5)
 		goto retry
-		return
 	}
-	s.processor(lib.NewConn(conn))
+	logs.Info("Successful connection with server %s", s.svrAddr)
+	//monitor the connection
+	go s.ping()
+	s.signal = c
+	//start a channel connection
+	go s.newChan()
+	//start health check if the it's open
+	if s.cnf != nil && len(s.cnf.Healths) > 0 {
+		go heathCheck(s.cnf.Healths, s.signal)
+	}
+	//msg connection, eg udp
+	s.handleMain()
 }
 
-//处理
-func (s *TRPClient) processor(c *lib.Conn) {
-	c.SetAlive()
-	if _, err := c.Write([]byte(lib.Getverifyval(s.vKey))); err != nil {
-		return
-	}
-	c.WriteMain()
-
-	go s.dealChan()
-
+//handle main connection
+func (s *TRPClient) handleMain() {
 	for {
-		flags, err := c.ReadFlag()
+		flags, err := s.signal.ReadFlag()
 		if err != nil {
-			lib.Println("服务端断开,正在重新连接")
+			logs.Error("Accept server data error %s, end this service", err.Error())
 			break
 		}
 		switch flags {
-		case lib.VERIFY_EER:
-			lib.Fatalf("vKey:%s不正确,服务端拒绝连接,请检查", s.vKey)
-		case lib.NEW_CONN:
-			if link, err := c.GetLinkInfo(); err != nil {
-				break
-			} else {
-				s.Lock()
-				s.linkMap[link.Id] = link
-				s.Unlock()
-				go s.linkProcess(link, c)
-			}
-		case lib.RES_CLOSE:
-			lib.Fatalln("该vkey被另一客户连接")
-		case lib.RES_MSG:
-			lib.Println("服务端返回错误，重新连接")
-			break
-		default:
-			lib.Println("无法解析该错误，重新连接")
-			break
-		}
-	}
-	s.stop <- true
-	s.linkMap = make(map[int]*lib.Link)
-	go s.NewConn()
-}
-func (s *TRPClient) linkProcess(link *lib.Link, c *lib.Conn) {
-	//与目标建立连接
-	server, err := net.DialTimeout(link.ConnType, link.Host, time.Second*3)
-
-	if err != nil {
-		c.WriteFail(link.Id)
-		lib.Println("connect to ", link.Host, "error:", err)
-		return
-	}
-
-	c.WriteSuccess(link.Id)
-
-	link.Conn = lib.NewConn(server)
-
-	for {
-		buf := lib.BufPoolCopy.Get().([]byte)
-		if n, err := server.Read(buf); err != nil {
-			lib.PutBufPoolCopy(buf)
-			s.tunnel.SendMsg([]byte(lib.IO_EOF), link)
-			break
-		} else {
-			if _, err := s.tunnel.SendMsg(buf[:n], link); err != nil {
-				lib.PutBufPoolCopy(buf)
-				c.Close()
-				break
-			}
-			lib.PutBufPoolCopy(buf)
-			//if link.ConnType == utils.CONN_UDP {
-			//	c.Close()
-			//	break
-			//}
-		}
-	}
-
-	s.Lock()
-	delete(s.linkMap, link.Id)
-	s.Unlock()
-}
-
-//隧道模式处理
-func (s *TRPClient) dealChan() {
-	var err error
-	//创建一个tcp连接
-	conn, err := net.Dial("tcp", s.svrAddr)
-	if err != nil {
-		lib.Println("connect to ", s.svrAddr, "error:", err)
-		return
-	}
-	//验证
-	if _, err := conn.Write([]byte(lib.Getverifyval(s.vKey))); err != nil {
-		lib.Println("connect to ", s.svrAddr, "error:", err)
-		return
-	}
-	//默认长连接保持
-	s.tunnel = lib.NewConn(conn)
-	s.tunnel.SetAlive()
-	//写标志
-	s.tunnel.WriteChan()
-
-	go func() {
-		for {
-			if id, err := s.tunnel.GetLen(); err != nil {
-				lib.Println("get msg id error")
-				break
-			} else {
-				s.Lock()
-				if v, ok := s.linkMap[id]; ok {
-					s.Unlock()
-					if content, err := s.tunnel.GetMsgContent(v); err != nil {
-						lib.Println("get msg content error:", err, id)
-						break
-					} else {
-						if len(content) == len(lib.IO_EOF) && string(content) == lib.IO_EOF {
-							v.Conn.Close()
-						} else if v.Conn != nil {
-							v.Conn.Write(content)
-						}
+		case common.NEW_UDP_CONN:
+			//read server udp addr and password
+			if lAddr, err := s.signal.GetShortLenContent(); err != nil {
+				logs.Warn(err)
+				return
+			} else if pwd, err := s.signal.GetShortLenContent(); err == nil {
+				var localAddr string
+				//The local port remains unchanged for a certain period of time
+				if v, ok := s.p2pAddr[crypt.Md5(string(pwd)+strconv.Itoa(int(time.Now().Unix()/100)))]; !ok {
+					tmpConn, err := common.GetLocalUdpAddr()
+					if err != nil {
+						logs.Error(err)
+						return
 					}
+					localAddr = tmpConn.LocalAddr().String()
 				} else {
-					s.Unlock()
+					localAddr = v
+				}
+				go s.newUdpConn(localAddr, string(lAddr), string(pwd))
+			}
+		}
+	}
+	s.Close()
+}
+
+func (s *TRPClient) newUdpConn(localAddr, rAddr string, md5Password string) {
+	var localConn net.PacketConn
+	var err error
+	var remoteAddress string
+	if remoteAddress, localConn, err = handleP2PUdp(localAddr, rAddr, md5Password, common.WORK_P2P_PROVIDER); err != nil {
+		logs.Error(err)
+		return
+	}
+	l, err := kcp.ServeConn(nil, 150, 3, localConn)
+	if err != nil {
+		logs.Error(err)
+		return
+	}
+	logs.Trace("start local p2p udp listen, local address", localConn.LocalAddr().String())
+	for {
+		udpTunnel, err := l.AcceptKCP()
+		if err != nil {
+			logs.Error(err)
+			l.Close()
+			return
+		}
+		if udpTunnel.RemoteAddr().String() == string(remoteAddress) {
+			conn.SetUdpSession(udpTunnel)
+			logs.Trace("successful connection with client ,address %s", udpTunnel.RemoteAddr().String())
+			//read link info from remote
+			conn.Accept(mux.NewMux(udpTunnel, s.bridgeConnType), func(c net.Conn) {
+				go s.handleChan(c)
+			})
+			break
+		}
+	}
+}
+
+//mux tunnel
+func (s *TRPClient) newChan() {
+	tunnel, err := NewConn(s.bridgeConnType, s.vKey, s.svrAddr, common.WORK_CHAN, s.proxyUrl)
+	if err != nil {
+		logs.Error("connect to ", s.svrAddr, "error:", err)
+		return
+	}
+	s.tunnel = mux.NewMux(tunnel.Conn, s.bridgeConnType)
+	for {
+		src, err := s.tunnel.Accept()
+		if err != nil {
+			logs.Warn(err)
+			s.Close()
+			break
+		}
+		go s.handleChan(src)
+	}
+}
+
+func (s *TRPClient) handleChan(src net.Conn) {
+	lk, err := conn.NewConn(src).GetLinkInfo()
+	if err != nil {
+		src.Close()
+		logs.Error("get connection info from server error ", err)
+		return
+	}
+	//host for target processing
+	lk.Host = common.FormatAddress(lk.Host)
+	//if Conn type is http, read the request and log
+	if lk.ConnType == "http" {
+		if targetConn, err := net.Dial(common.CONN_TCP, lk.Host); err != nil {
+			logs.Warn("connect to %s error %s", lk.Host, err.Error())
+			src.Close()
+		} else {
+			srcConn := conn.GetConn(src, lk.Crypt, lk.Compress, nil, false)
+			go func() {
+				common.CopyBuffer(srcConn, targetConn)
+				srcConn.Close()
+				targetConn.Close()
+			}()
+			for {
+				if r, err := http.ReadRequest(bufio.NewReader(srcConn)); err != nil {
+					srcConn.Close()
+					targetConn.Close()
+					break
+				} else {
+					logs.Trace("http request, method %s, host %s, url %s, remote address %s", r.Method, r.Host, r.URL.Path, r.RemoteAddr)
+					r.Write(targetConn)
 				}
 			}
 		}
-	}()
-	select {
-	case <-s.stop:
+		return
+	}
+	//connect to target if conn type is tcp or udp
+	if targetConn, err := net.Dial(lk.ConnType, lk.Host); err != nil {
+		logs.Warn("connect to %s error %s", lk.Host, err.Error())
+		src.Close()
+	} else {
+		logs.Trace("new %s connection with the goal of %s, remote address:%s", lk.ConnType, lk.Host, lk.RemoteAddr)
+		conn.CopyWaitGroup(src, targetConn, lk.Crypt, lk.Compress, nil, nil, false, nil)
+	}
+}
+
+// Whether the monitor channel is closed
+func (s *TRPClient) ping() {
+	s.ticker = time.NewTicker(time.Second * 5)
+loop:
+	for {
+		select {
+		case <-s.ticker.C:
+			if s.tunnel != nil && s.tunnel.IsClose {
+				s.Close()
+				break loop
+			}
+		}
+	}
+}
+
+func (s *TRPClient) Close() {
+	if s.tunnel != nil {
+		s.tunnel.Close()
+	}
+	if s.signal != nil {
+		s.signal.Close()
+	}
+	if s.ticker != nil {
+		s.ticker.Stop()
 	}
 }
